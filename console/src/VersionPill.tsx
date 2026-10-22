@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Settings, UpgradeState } from './api'
 import { c, mono } from './design/kit'
+import { REPO_URL } from './design/Brand'
 import { Notes } from './notes'
 
 // The one place the console talks about versions: a small pill in the bottom
@@ -42,8 +43,8 @@ export function VersionPill({ settings, dismissed, onDismiss, upg, startUpgrade,
 
   const pillText = running ? `Upgrading to ${upg?.target}…`
     : failed ? `Upgrade ${upg?.phase === 'rolled_back' ? 'rolled back' : 'failed'}`
-    : latest ? `sandboxd ${version} · ${untagged ? `untagged build · latest ${latest}` : `${latest} available`}`
-    : `sandboxd ${version}`
+    : latest ? `DevBox ${version} · ${untagged ? `untagged build · latest ${latest}` : `${latest} available`}`
+    : `DevBox ${version}`
 
   const issueBody = [
     `**Version:** ${version}${commit ? ` (${commit})` : ''}`,
@@ -51,7 +52,7 @@ export function VersionPill({ settings, dismissed, onDismiss, upg, startUpgrade,
     `**Browser:** ${typeof navigator !== 'undefined' ? navigator.userAgent : ''}`,
     '', '**What happened**', '', '**Steps**', '',
   ].join('\n')
-  const issueURL = `https://github.com/tastyeffectco/sandboxd/issues/new?title=&body=${encodeURIComponent(issueBody)}`
+  const issueURL = `${REPO_URL}/issues/new?title=&body=${encodeURIComponent(issueBody)}`
 
   const btn = (primary: boolean, disabled = false) => ({
     font: 'inherit', fontSize: 12, padding: '3px 10px', borderRadius: 5, border: `1px solid ${c.border}`,
@@ -74,6 +75,7 @@ export function VersionPill({ settings, dismissed, onDismiss, upg, startUpgrade,
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
             <span style={{ ...mono, fontSize: 12.5, fontWeight: 600 }}>{version}{commit && <span style={{ color: c.muted, fontWeight: 400 }}> · {commit}</span>}</span>
             <span style={{ flex: 1 }} />
+            <a data-testid="fork-link" href={REPO_URL} target="_blank" rel="noreferrer" style={{ color: c.muted, textDecoration: 'none' }}>GitHub ↗</a>
             <a data-testid="report-issue" href={issueURL} target="_blank" rel="noreferrer" style={{ color: c.muted, textDecoration: 'none' }}>Report an issue ↗</a>
           </div>
 

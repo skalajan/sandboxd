@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from './api'
 import { c, font, Btn, Input, H } from './design/kit'
+import { Brand } from './design/Brand'
 
 // Full-page centered auth screens shown before the app when a session is required.
 // Both are minimal single-card forms; Enter submits, errors render inline.
@@ -9,7 +10,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="auth-page">
       <aside className="auth-story">
-        <div className="auth-brand">◇ sandboxd</div>
+        <div className="auth-brand"><Brand light /></div>
         <div>
           <span className="eyebrow">YOUR IDEAS. YOUR INFRASTRUCTURE.</span>
           <h1>
@@ -34,7 +35,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       </aside>
       <main className="auth-form">
         <div className="auth-form-inner">
-          <div className="auth-mobile-brand">◇ sandboxd</div>
+          <div className="auth-mobile-brand"><Brand /></div>
           {children}
         </div>
       </main>
@@ -172,7 +173,7 @@ export function CreatePassword({ onDone }: { onDone: () => void }) {
   return (
     <Shell>
       <H size={18} style={{ marginBottom: 4 }}>
-        Welcome to sandboxd
+        Welcome to ProCeram DevBox
       </H>
       <div style={{ color: c.muted, fontSize: 12.5, marginBottom: 16 }}>
         Create a console password. You'll use it to sign in from now on.

@@ -17,7 +17,7 @@ describe('VersionPill', () => {
   it('shows the running version and no dot when up to date', () => {
     render(<VersionPill settings={settingsFixture} dismissed={false} onDismiss={noop} upg={null} startUpgrade={noop} clearUpgrade={noop} />)
     const pill = screen.getByTestId('version-pill')
-    expect(pill.textContent).toBe('sandboxd v0.4.0')
+    expect(pill.textContent).toBe('DevBox v0.4.0')
     expect(pill.getAttribute('data-version')).toBe('v0.4.0')
     expect(screen.queryByTestId('version-dot')).toBeNull()
     fireEvent.click(pill)
@@ -27,7 +27,7 @@ describe('VersionPill', () => {
 
   it('announces a release update and renders notes, links and the issue template', () => {
     render(<VersionPill settings={withUpdate()} dismissed={false} onDismiss={noop} upg={null} startUpgrade={noop} clearUpgrade={noop} />)
-    expect(screen.getByTestId('version-pill').textContent).toBe('sandboxd v0.4.0 · v0.5.0 available')
+    expect(screen.getByTestId('version-pill').textContent).toBe('DevBox v0.4.0 · v0.5.0 available')
     expect(screen.getByTestId('version-dot')).toBeTruthy()
     fireEvent.click(screen.getByTestId('version-pill'))
     const panel = screen.getByTestId('version-panel')
@@ -36,7 +36,7 @@ describe('VersionPill', () => {
     expect(screen.getByTestId('update-notes').textContent).toContain('Faster builds')
     expect(screen.getByTestId('breaking-box').textContent).toContain('SANDBOXD_PORT')
     const issue = screen.getByTestId('report-issue').getAttribute('href') || ''
-    expect(issue.startsWith('https://github.com/tastyeffectco/sandboxd/issues/new?title=&body=')).toBe(true)
+    expect(issue.startsWith('https://github.com/skalajan/sandboxd/issues/new?title=&body=')).toBe(true)
     const body = decodeURIComponent(issue.split('body=')[1])
     expect(body).toContain('**Version:** v0.4.0 (abc1234)')
     expect(body).toContain('**Preview host style:** nested')
@@ -73,7 +73,7 @@ describe('VersionPill', () => {
 
   it('words untagged builds softly', () => {
     render(<VersionPill settings={withUpdate({ version: 'e2ca6f6', update_kind: 'untagged' })} dismissed={false} onDismiss={noop} upg={null} startUpgrade={noop} clearUpgrade={noop} />)
-    expect(screen.getByTestId('version-pill').textContent).toBe('sandboxd e2ca6f6 · untagged build · latest v0.5.0')
+    expect(screen.getByTestId('version-pill').textContent).toBe('DevBox e2ca6f6 · untagged build · latest v0.5.0')
     fireEvent.click(screen.getByTestId('version-pill'))
     expect(screen.getByTestId('version-panel').textContent).toContain("You're on an untagged build (e2ca6f6); the latest release is v0.5.0")
   })

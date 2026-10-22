@@ -12,6 +12,8 @@ import { BuildIntent } from './AgentPicker'
 import { Dialog } from './design/Dialog'
 import { IS_DEMO } from './demo'
 import { Icon, IconName } from './design/Icon'
+import { REPO_URL } from './design/Brand'
+import logo from './design/proceram-logo.svg'
 import { confirmLeaveWorkspace } from './unsavedChanges'
 import { VersionPill } from './VersionPill'
 import { Login, CreatePassword } from './AuthGate'
@@ -272,7 +274,7 @@ export default function App() {
         <button className="icon-button" aria-label="Open navigation" onClick={() => setMobileNav(true)}>
           <Icon name="menu" />
         </button>
-        <strong>sandboxd</strong>
+        <strong>DevBox</strong>
         <button
           className="icon-button"
           aria-label="Search projects and commands"
@@ -291,12 +293,10 @@ export default function App() {
         )}
         <aside className={`studio-sidebar ${mobileNav ? 'is-open' : ''}`}>
           <button className="studio-brand" onClick={() => setRoute({ name: 'apps' })}>
-            <span>
-              <Icon name="box" size={23} />
+            <span style={{ width: 'auto', background: 'none' }}>
+              <img src={logo} alt="ProCeram" style={{ height: 15, display: 'block' }} />
             </span>
-            <strong>
-              sandboxd<small>BUILD SOMETHING YOURS</small>
-            </strong>
+            <strong style={{ fontSize: 17 }}>DevBox</strong>
           </button>
           <button
             className="sidebar-new"
@@ -354,13 +354,18 @@ export default function App() {
               <Icon name="external" size={12} />
             </a>
             <a
-              href="https://github.com/tastyeffectco/sandboxd/discussions"
+              href={`${REPO_URL}/issues`}
               target="_blank"
               rel="noreferrer"
               data-testid="nav-feedback"
             >
-              <Icon name="code" size={16} />
+              <Icon name="spark" size={16} />
               <span>Community & feedback</span>
+            </a>
+            <a href={REPO_URL} target="_blank" rel="noreferrer">
+              <Icon name="code" size={16} />
+              <span>GitHub</span>
+              <Icon name="external" size={12} />
             </a>
             {auth.enabled && (
               <button onClick={logout} data-testid="nav-logout">
