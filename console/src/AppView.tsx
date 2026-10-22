@@ -20,6 +20,7 @@ import { VersionsPanel } from './VersionsPanel'
 import { SecretsPanel } from './SecretsPanel'
 import { DeployModal } from './DeployModal'
 import { slugKey, splitInline } from './brain'
+import { PreviewFocusButton } from './PreviewFocus'
 
 // Code-split the CodeMirror editor: it's the app's heaviest dependency and only
 // needed on the Files tab, so it loads on demand rather than in the main bundle.
@@ -660,6 +661,7 @@ function PreviewPane({ sb }: { sb: Sandbox | null }) {
             <Icon name="phone" size={16} />
           </button>
         </div>
+        <PreviewFocusButton />
         {url && (
           <a
             className="icon-button"

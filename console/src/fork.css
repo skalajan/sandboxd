@@ -1,0 +1,10 @@
+@media (min-width: 1001px) {
+  html[data-preview-expanded] :is(.studio-sidebar, .workspace-header, .workspace-tabs) {
+    display: none !important;
+  }
+}
+@media (max-width: 1000px) {
+  .preview-focus {
+    display: none;
+  }
+}

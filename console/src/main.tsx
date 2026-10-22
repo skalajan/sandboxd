@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import DesktopHost from './DesktopHost'
 import './design.css'
+import './fork.css'
 import { IS_DEMO, installDemo } from './demo'
 import DemoBanner from './DemoBanner'
 
