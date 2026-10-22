@@ -21,6 +21,7 @@ import { SecretsPanel } from './SecretsPanel'
 import { DeployModal } from './DeployModal'
 import { slugKey, splitInline } from './brain'
 import { PreviewFocusButton } from './PreviewFocus'
+import { useGitSync, GitSyncBanner, GitSyncButtons } from './GitSyncPanel'
 
 // Code-split the CodeMirror editor: it's the app's heaviest dependency and only
 // needed on the Files tab, so it loads on demand rather than in the main bundle.
@@ -508,7 +509,14 @@ export function AppView({
               </div>
             )}
             {tabName === 'git' && (
-              <GitTab appId={appId} onError={onError} toast={toast} goSettings={goSettings} />
+              <GitTab
+                appId={appId}
+                sbId={sb?.id}
+                onError={onError}
+                toast={toast}
+                goSettings={goSettings}
+                onViewTask={() => setMobilePane('chat')}
+              />
             )}
             {tabName === 'config' && <SecretsPanel appId={appId} onError={onError} toast={toast} />}
             {(tabName === 'terminal' || visited.has('terminal')) && (
@@ -1740,16 +1748,20 @@ function DiffView({ text }: { text: string }) {
   )
 }
 
-function GitTab({
+export function GitTab({
   appId,
+  sbId,
   onError,
   toast,
   goSettings,
+  onViewTask,
 }: {
   appId: string
+  sbId?: string
   onError: (m: string) => void
   toast: (m: string) => void
   goSettings: () => void
+  onViewTask?: () => void
 }) {
   const [st, setSt] = useState<GitStatus | null>(null)
   const [sel, setSel] = useState<Record<string, boolean>>({})
@@ -1776,12 +1788,14 @@ function GitTab({
   useEffect(() => {
     load()
   }, [load])
+  const sync = useGitSync({ appId, sbId, st, setSt, load, onError, toast, setDiffPath, setDiff, setDiffLoading })
 
   const files: GitFile[] = st?.files || []
   const runtimeFiles: GitFile[] = st?.runtime_files || []
   const selected = files.filter((f) => sel[f.path]).map((f) => f.path)
 
   const viewDiff = async (p: string) => {
+    sync.exitRange()
     setDiffPath(p)
     setDiffLoading(true)
     setDiff('')
@@ -1907,6 +1921,7 @@ function GitTab({
   return (
     <div className="git-layout">
       <Card style={{ padding: 14 }} data-testid="git-panel">
+        <GitSyncBanner sync={sync} onViewTask={onViewTask} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
           <H size={14}>Changes</H>
           <span
@@ -1990,6 +2005,7 @@ function GitTab({
             {pushing ? 'Pushing…' : `Push${(st?.ahead ?? 0) > 0 ? ` ↑${st?.ahead}` : ''}`}
           </Btn>
         </div>
+        <GitSyncButtons sync={sync} filesCount={files.length} />
         <div style={{ fontSize: 11.5, color: c.muted2, marginTop: 8 }}>
           Push needs a Git credential —{' '}
           <button onClick={goSettings} className="text-button">
@@ -2000,7 +2016,7 @@ function GitTab({
       </Card>
 
       <Card style={{ padding: 0, overflow: 'hidden', minHeight: 440 }}>
-        {diffPath == null ? (
+        {diffPath == null && !sync.rangeMode ? (
           <div style={{ padding: 44, textAlign: 'center', color: c.muted2, fontSize: 13 }}>
             Click a changed file to see its diff.
           </div>
@@ -2018,7 +2034,7 @@ function GitTab({
                 whiteSpace: 'nowrap',
               }}
             >
-              {diffPath}
+              {sync.rangeMode ? 'origin/main..HEAD — what Publish will push' : diffPath}
             </div>
             {diffLoading ? (
               <div style={{ padding: 24, color: c.muted2, fontSize: 13 }}>Loading diff…</div>

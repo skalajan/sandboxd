@@ -962,6 +962,9 @@ paths:
                         path: { type: string }
                         status: { type: string, enum: [modified, added, deleted, renamed, copied, untracked, unmerged] }
                         staged: { type: boolean }
+                  in_progress: { type: string, enum: [merge, rebase, ""], description: "Derived from .git/MERGE_HEAD, .git/rebase-merge and .git/rebase-apply. Empty when no operation is running." }
+                  conflicts: { type: array, items: { type: string }, description: "Unmerged paths (git diff --name-only --diff-filter=U)." }
+                  resolve_task_id: { type: string, nullable: true, description: "Most recent sync-resolution agent task for this app, if any." }
         "404": { $ref: "#/components/responses/Error" }
 
   /v1/apps/{id}/git/diff:
@@ -976,6 +979,14 @@ paths:
           name: path
           schema: { type: string }
           description: Optional workspace-relative path filter. Absolute paths and `..` are rejected.
+        - in: query
+          name: range
+          schema: { type: string, enum: ["origin/main..HEAD"] }
+          description: >
+            Combined diff of what Publish would push, instead of the working tree vs HEAD.
+            Computed from the merge base (git diff origin/main...HEAD), so commits only on main are not shown.
+            Only the exact value origin/main..HEAD is accepted; any other revision is rejected.
+            Ignores path. Same truncation cap.
       responses:
         "200":
           description: Unified diff (capped), or { available:false, reason }.
@@ -1043,9 +1054,9 @@ paths:
       description: >
         Pushes HEAD to a NEW remote branch using app.git_repo_url + app.git_credential_id
         (never .git/config origin). The token is decrypted control-plane-side and reaches
-        git only via a host-checking GIT_ASKPASS + 0600 file; hooks and unsafe protocols
-        are disabled; a dangerous repo-local config (insteadOf/sshCommand/fsmonitor/
-        hooksPath/proxy) refuses the push. Works whether the sandbox is running or stopped.
+        git only via a host-checking GIT_ASKPASS reading an inherited pipe; hooks and unsafe
+        protocols are disabled; any repo-local config outside the allow-list refuses the
+        push (unsafe_repo_config). Wakes the sandbox if stopped and pauses it during the push.
         No fetch/pull/deepen in this slice (a shallow-update rejection returns
         shallow_push_unsupported).
       requestBody:
@@ -1065,7 +1076,7 @@ paths:
                 type: object
                 properties:
                   pushed: { type: boolean }
-                  reason: { type: string, description: "no_workspace | not_a_git_repo | no_repo_url | no_credential | credential_not_found | unsafe_repo_config | empty_repo_unsupported | no_local_commits | refuses_default_branch | branch_exists | non_fast_forward | auth_failed | shallow_push_unsupported | push_failed" }
+                  reason: { type: string, description: "no_workspace | sandbox_not_running | merge_in_progress | not_a_git_repo | no_repo_url | no_credential | credential_not_found | unsafe_repo_config | host_git_too_old | empty_repo_unsupported | no_local_commits | refuses_default_branch | branch_exists | non_fast_forward | auth_failed | shallow_push_unsupported | push_failed" }
                   branch: { type: string }
                   remote_url: { type: string, description: "Tokenless." }
                   commits: { type: integer }
@@ -1073,6 +1084,69 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+
+  /v1/apps/{id}/git/sync:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      operationId: syncAppGit
+      tags: [apps]
+      summary: Sync the app's workspace with the remote main. Publish (merge + push to main) or rebase locally. Conflicts hand off to an agent task.
+      description: >
+        Steps under the per-workspace git lock: pre-flight (same guards as push), auto-commit
+        of user files if dirty, host-side fetch of origin/main, then an in-sandbox merge
+        (publish) or rebase (rebase). A clean publish pushes HEAD:refs/heads/main fast-forward
+        only (never force). A conflict leaves the merge/rebase in progress and submits an
+        agent resolution task; the result stays local and unpushed until a second publish.
+        Wakes the sandbox if stopped. If a merge or rebase is already in progress, returns
+        state=resolving with the existing resolve_task_id (idempotent).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { type: string, enum: [publish, rebase], description: "publish = merge origin/main and push to main; rebase = rebase local work onto origin/main (local only)." }
+      responses:
+        "200":
+          description: Sync outcome. Domain outcomes (including failed) return 200.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state: { type: string, enum: [published, rebased, up_to_date, resolving, failed] }
+                  reason: { type: string, description: "Set when state=failed. no_repo_url | no_credential | credential_not_found | no_workspace | not_a_git_repo | empty_repo_unsupported | unsafe_repo_config | host_git_too_old | merge_in_progress | fetch_failed | no_main_branch | auth_failed | non_fast_forward | agent_unavailable | sync_failed" }
+                  commits: { type: integer, description: "Set for published and rebased." }
+                  auto_committed: { type: string, description: "Short sha of the auto-commit, if one was made." }
+                  task_id: { type: string, description: "Set when state=resolving." }
+                  conflicts: { type: array, items: { type: string }, description: "Set when state=resolving (and on agent_unavailable). At most 200 paths, control characters stripped." }
+                  operation: { type: string, enum: [merge, rebase], description: "Set when state=resolving." }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/apps/{id}/git/sync/abort:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      operationId: abortAppGitSync
+      tags: [apps]
+      summary: Abort the in-progress merge or rebase in the workspace (git merge --abort / git rebase --abort).
+      description: Runs under the per-workspace git lock. Does not touch remote state.
+      responses:
+        "200":
+          description: Abort result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  aborted: { type: boolean }
+                  reason: { type: string, description: "nothing_in_progress when aborted is false." }
+        "404": { $ref: "#/components/responses/Error" }
 
   /v1/apps/{id}/config:
     parameters:

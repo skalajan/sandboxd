@@ -175,6 +175,9 @@ export interface GitStatus {
   behind?: number | null
   files?: GitFile[] // user/repo changes
   runtime_files?: GitFile[] // sandboxd/runtime-generated (sandbox.yaml, lockfiles, caches)
+  in_progress?: 'merge' | 'rebase' | '' // an agent-resolved sync is mid-flight
+  conflicts?: string[] // unmerged paths while in_progress
+  resolve_task_id?: string // most recent sync-resolution task, survives reload
 }
 export interface GitDiff {
   available: boolean
@@ -188,6 +191,15 @@ export interface GitCommitResult {
   sha?: string
   branch?: string
   files_committed?: string[]
+}
+export interface GitSyncResult {
+  state: 'published' | 'rebased' | 'up_to_date' | 'resolving' | 'failed'
+  reason?: string // state=failed
+  commits?: number
+  auto_committed?: string
+  task_id?: string // state=resolving
+  conflicts?: string[]
+  operation?: 'merge' | 'rebase'
 }
 export interface GitPushResult {
   pushed: boolean
@@ -468,6 +480,12 @@ export const api = {
   gitStatus: (appId: string) => req<GitStatus>('GET', `/v1/apps/${appId}/git/status`),
   gitDiff: (appId: string, path?: string) =>
     req<GitDiff>('GET', `/v1/apps/${appId}/git/diff${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+  gitRangeDiff: (appId: string) =>
+    req<GitDiff>('GET', `/v1/apps/${appId}/git/diff?range=${encodeURIComponent('origin/main..HEAD')}`),
+  gitSync: (appId: string, mode: 'publish' | 'rebase') =>
+    req<GitSyncResult>('POST', `/v1/apps/${appId}/git/sync`, { mode }),
+  gitSyncAbort: (appId: string) =>
+    req<{ aborted: boolean; reason?: string }>('POST', `/v1/apps/${appId}/git/sync/abort`),
   gitCommit: (
     appId: string,
     body: { message: string; paths?: string[]; runtime_paths?: string[]; author_name?: string; author_email?: string },

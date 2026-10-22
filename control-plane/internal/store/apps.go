@@ -83,6 +83,25 @@ func (s *Store) SetAppImported(ctx context.Context, id string, at int64) error {
 	})
 }
 
+// SetAppGitResolveTaskID records the latest git-sync resolution task ("" clears it).
+func (s *Store) SetAppGitResolveTaskID(ctx context.Context, id, taskID string) error {
+	return s.submit(ctx, func(db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `UPDATE app SET git_resolve_task_id = ? WHERE id = ?`,
+			sql.NullString{String: taskID, Valid: taskID != ""}, id)
+		return err
+	})
+}
+
+// GetAppGitResolveTaskID returns the latest git-sync resolution task ("" = none).
+func (s *Store) GetAppGitResolveTaskID(ctx context.Context, id string) (string, error) {
+	var v sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT git_resolve_task_id FROM app WHERE id = ?`, id).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return v.String, err
+}
+
 // CreateApp inserts a new app. The caller sets ID (ULID) and OwnerToken.
 func (s *Store) CreateApp(ctx context.Context, a *App) error {
 	return s.submit(ctx, func(db *sql.DB) error {

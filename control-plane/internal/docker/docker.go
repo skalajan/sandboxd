@@ -243,6 +243,18 @@ func (c *Client) Start(ctx context.Context, name string) error {
 	return err
 }
 
+// Pause runs `docker pause <name>` (freezes every process in the container).
+func (c *Client) Pause(ctx context.Context, name string) error {
+	_, err := c.run(ctx, "pause", name)
+	return err
+}
+
+// Unpause runs `docker unpause <name>`.
+func (c *Client) Unpause(ctx context.Context, name string) error {
+	_, err := c.run(ctx, "unpause", name)
+	return err
+}
+
 // Stop runs `docker stop --time=<sec> <name>`. The kernel still kills
 // the container after the grace period, so a runaway process can't
 // pin the call open indefinitely. Required by Phase 5's idle and

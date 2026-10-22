@@ -61,6 +61,11 @@ type v1GitStatusResp struct {
 	// Their union is the raw working-tree change set (status stays truthful).
 	Files        []v1GitFile `json:"files"`
 	RuntimeFiles []v1GitFile `json:"runtime_files"`
+	// InProgress is a stopped git/sync operation (merge|rebase|""); Conflicts are
+	// its unmerged paths; ResolveTaskID is the latest sync-resolution task.
+	InProgress    string   `json:"in_progress"`
+	Conflicts     []string `json:"conflicts"`
+	ResolveTaskID string   `json:"resolve_task_id,omitempty"`
 }
 
 type v1GitDiffResp struct {
@@ -117,10 +122,21 @@ func (s *Server) v1GitStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"available": false, "reason": reason})
 		return
 	}
-	writeJSON(w, http.StatusOK, gitStatus(r.Context(), s.gitExec(), sb.ID))
+	st := gitStatus(r.Context(), s.gitExec(), sb.ID)
+	if st.Available {
+		st.InProgress, st.Conflicts = gitInProgress(filepath.Join(sb.WorkspaceMnt, "workspace", "app")), []string{}
+		if st.InProgress != "" {
+			st.Conflicts = gitConflicts(r.Context(), s.gitExec(), sb.ID)
+		}
+		st.ResolveTaskID, _ = s.Store.GetAppGitResolveTaskID(r.Context(), sb.AppID.String)
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
-// GET /v1/apps/{id}/git/diff?path=<optional relative path>
+// syncDiffRange is the only accepted git/diff `range` (what Publish would push).
+const syncDiffRange = "origin/main..HEAD"
+
+// GET /v1/apps/{id}/git/diff?path=<optional relative path>&range=origin/main..HEAD
 func (s *Server) v1GitDiff(w http.ResponseWriter, r *http.Request) {
 	sb, reason, handled := s.gitSandbox(w, r)
 	if handled {
@@ -128,6 +144,15 @@ func (s *Server) v1GitDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	if reason != "" {
 		writeJSON(w, http.StatusOK, map[string]any{"available": false, "reason": reason})
+		return
+	}
+	rev := []string{"HEAD"}
+	switch r.URL.Query().Get("range") {
+	case "":
+	case syncDiffRange:
+		rev = []string{"refs/remotes/origin/main...HEAD"} // merge-base: only what Publish adds
+	default:
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid range (only "+syncDiffRange+")")
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -139,7 +164,7 @@ func (s *Server) v1GitDiff(w http.ResponseWriter, r *http.Request) {
 		path = filepath.Clean(path)
 	}
 	// NOTE: do not log the diff body — it can contain secrets.
-	writeJSON(w, http.StatusOK, gitDiff(r.Context(), s.gitExec(), sb.ID, path))
+	writeJSON(w, http.StatusOK, gitDiffRev(r.Context(), s.gitExec(), sb.ID, rev, path))
 }
 
 // --- commit (B1) ------------------------------------------------------
@@ -207,6 +232,10 @@ func (s *Server) v1GitCommit(w http.ResponseWriter, r *http.Request) {
 	// global, so different apps never block each other.
 	s.Locks.Lock(gitLockKey(sb.ID))
 	defer s.Locks.Unlock(gitLockKey(sb.ID))
+	if gitInProgress(filepath.Join(sb.WorkspaceMnt, "workspace", "app")) != "" {
+		writeJSON(w, http.StatusOK, v1GitCommitResp{Committed: false, Reason: "merge_in_progress"})
+		return
+	}
 	// NOTE: do not log the message or path contents — they can carry secrets.
 	writeJSON(w, http.StatusOK, gitCommit(r.Context(), s.gitExec(), sb.ID, req))
 }
@@ -408,9 +437,14 @@ func splitRuntimeFiles(all []v1GitFile) (user, runtime []v1GitFile) {
 }
 
 func gitDiff(ctx context.Context, ex sandboxExecer, sbID, path string) v1GitDiffResp {
+	return gitDiffRev(ctx, ex, sbID, []string{"HEAD"}, path)
+}
+
+// gitDiffRev diffs the working tree against one rev, or two revs against each other.
+func gitDiffRev(ctx context.Context, ex sandboxExecer, sbID string, revs []string, path string) v1GitDiffResp {
 	// --no-ext-diff / --no-textconv are `git diff` options, NOT top-level git
 	// options — they must come AFTER the `diff` subcommand or git errors out.
-	args := []string{"diff", "--no-ext-diff", "--no-textconv", "HEAD"}
+	args := append([]string{"diff", "--no-ext-diff", "--no-textconv"}, revs...)
 	if path != "" {
 		args = append(args, "--", path)
 	}

@@ -90,6 +90,10 @@ type Server struct {
 	// production → the handler uses s.Docker; tests inject a fake execer.
 	GitExec sandboxExecer
 
+	// GitPause freezes the sandbox around host-side fetch/push. Nil in
+	// production → the handler uses s.Docker; tests inject a fake.
+	GitPause sandboxPauser
+
 	// AgentCfg is the in-memory cache of the platform's agent
 	// configuration (model + AGENTS.md) — the source of truth for
 	// what each sandbox's coding agent uses. Reads are lock-free
@@ -321,6 +325,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/apps/{id}/git/diff", s.observe("GET /v1/apps/{id}/git/diff", s.v1GitDiff))
 	mux.HandleFunc("POST /v1/apps/{id}/git/commit", s.observe("POST /v1/apps/{id}/git/commit", s.v1GitCommit))
 	mux.HandleFunc("POST /v1/apps/{id}/git/push", s.observe("POST /v1/apps/{id}/git/push", s.v1GitPush))
+	mux.HandleFunc("POST /v1/apps/{id}/git/sync", s.observe("POST /v1/apps/{id}/git/sync", s.v1GitSync))
+	mux.HandleFunc("POST /v1/apps/{id}/git/sync/abort", s.observe("POST /v1/apps/{id}/git/sync/abort", s.v1GitSyncAbort))
 	mux.HandleFunc("GET /v1/apps/{id}/config", s.observe("GET /v1/apps/{id}/config", s.v1ListAppConfig))
 	mux.HandleFunc("PATCH /v1/apps/{id}/config/{key}", s.observe("PATCH /v1/apps/{id}/config/{key}", s.v1PatchAppConfig))
 	mux.HandleFunc("DELETE /v1/apps/{id}/config/{key}", s.observe("DELETE /v1/apps/{id}/config/{key}", s.v1DeleteAppConfig))

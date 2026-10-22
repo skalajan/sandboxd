@@ -56,6 +56,13 @@ const (
 	SandboxStopped    = "sandbox.stopped"
 	SandboxDeleted    = "sandbox.deleted"
 
+	// Git sync (publish/rebase on main). Payloads carry repo_url (tokenless) + mode + reason — NEVER a token.
+	GitSyncPublished = "git.sync.published"
+	GitSyncRebased   = "git.sync.rebased"
+	GitSyncConflict  = "git.sync.conflict"
+	GitSyncFailed    = "git.sync.failed"
+	GitSyncAborted   = "git.sync.aborted"
+
 	TaskStarted     = "task.started"
 	TaskCompleted   = "task.completed"
 	TaskFailed      = "task.failed"
