@@ -8,3 +8,30 @@
     display: none;
   }
 }
+.agent-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.agent-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted-2);
+}
+.agent-steps-list > div,
+.task-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-steps-working {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.task-error {
+  min-width: 0;
+  font-size: 10px;
+}

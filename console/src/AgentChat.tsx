@@ -5,6 +5,7 @@ import { Btn } from './design/kit'
 import { Icon } from './design/Icon'
 import { AgentMessage } from './AgentMessage'
 import { Dialog } from './design/Dialog'
+import { AgentSteps, TaskFailure, useTaskProgress } from './TaskProgress'
 
 const terminal = (status: string) => ['succeeded', 'failed', 'cancelled', 'error'].includes(status)
 
@@ -45,6 +46,7 @@ export function AgentChat({
   const [error, setError] = useState('')
   const [revertTarget, setRevertTarget] = useState<TaskSummary | null>(null)
   const [reverting, setReverting] = useState(false)
+  const progress = useTaskProgress(active)
   const submitting = useRef(false)
   const initialSent = useRef(false)
   const saveDraftRef = useRef(saveDraft)
@@ -121,6 +123,7 @@ export function AgentChat({
       try {
         const m = JSON.parse((e as MessageEvent).data)
         if (m.model) setResolved(m.model)
+        progress.onStatus(m)
       } catch {
         /* invalid event */
       }
@@ -129,6 +132,7 @@ export function AgentChat({
       try {
         const m = JSON.parse((e as MessageEvent).data)
         setTool(`${m.name || 'Tool'}${m.path ? ` · ${m.path}` : ''}`)
+        progress.onTool(m)
       } catch {
         /* invalid event */
       }
@@ -286,6 +290,7 @@ export function AgentChat({
               </div>
               <div className="turn-meta">
                 <span className={`task-status status-${t.status}`}>{t.status}</span>
+                <TaskFailure t={t} />
                 {!!t.files_changed?.length && (
                   <details>
                     <summary>
@@ -322,7 +327,7 @@ export function AgentChat({
             </div>
             <div role="status" className="agent-progress">
               <span className="loading-dot" />
-              {tool || 'Building in your workspace…'}
+              <AgentSteps p={progress} fallback={tool || 'Building in your workspace…'} />
             </div>
             {resolved && <p className="field-help">{resolved}</p>}
           </article>
