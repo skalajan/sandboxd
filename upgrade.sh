@@ -218,7 +218,8 @@ bold "4/4 · Health check"
 # Probe the published bind first; installs that drop `ports:` (override with
 # `ports: !reset []`) are probed from inside the control-plane container on the
 # listener port (SANDBOXD_ADDR, default :9000).
-CP_PORT="${SANDBOXD_ADDR##*:}"; [ -n "$CP_PORT" ] && [ "$CP_PORT" != "${SANDBOXD_ADDR:-}" ] || CP_PORT=9000
+CP_ADDR="${SANDBOXD_ADDR:-}"; CP_PORT="${CP_ADDR##*:}"
+[ -n "$CP_PORT" ] && [ "$CP_PORT" != "$CP_ADDR" ] || CP_PORT=9000
 healthy=0
 for _ in $(seq 1 30); do
   if curl -fsS -m 5 "http://$API_BIND/healthz" 2>/dev/null | grep -q ok; then healthy=1; break; fi
