@@ -1,4 +1,4 @@
-// fetch.go — host-side FETCH of the app's remote main into refs/remotes/origin/<branch>,
+// fetch.go — host-side FETCH of the app's remote sync branch into refs/remotes/origin/<branch>,
 // with the same hardening as Push (openRepo + allow-list audit, hardenedConfig,
 // tokenless URL on argv, host-checking askpass, sandbox uid).
 package gitimport
@@ -33,7 +33,7 @@ func (Runner) Fetch(ctx context.Context, spec FetchSpec) FetchOutcome {
 		spec.Token == "" || spec.ExpectHost == "" {
 		return FetchOutcome{Reason: "fetch_failed"}
 	}
-	rc, reason := openAudited(ctx, spec.AppDir)
+	rc, reason := openAudited(ctx, spec.AppDir, spec.Branch)
 	if reason != "" {
 		if reason == "failed" {
 			reason = "fetch_failed"

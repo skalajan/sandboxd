@@ -2034,7 +2034,7 @@ export function GitTab({
                 whiteSpace: 'nowrap',
               }}
             >
-              {sync.rangeMode ? 'origin/main..HEAD — what Publish will push' : diffPath}
+              {sync.rangeMode ? `origin/${sync.branch}..HEAD — what Publish will push` : diffPath}
             </div>
             {diffLoading ? (
               <div style={{ padding: 24, color: c.muted2, fontSize: 13 }}>Loading diff…</div>

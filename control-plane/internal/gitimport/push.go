@@ -152,9 +152,33 @@ const maxConfigBytes = 1 << 20
 // Includes, or worktreeConfig (git would read config.worktree and its includes), refused pre-audit.
 var reIncludeSection = regexp.MustCompile(`(?i)\[\s*include|worktreeconfig`)
 
+// layoutPaths lists the .git entries host git may read or write; every path
+// component of refs/remotes/origin/<branch> and its reflog is included for each
+// branch the caller is about to fetch or push (main always).
+func layoutPaths(branches []string) []string {
+	names := []string{"config", "HEAD", "packed-refs", "shallow", "refs", "refs/heads",
+		"refs/remotes", "refs/remotes/origin", "objects", "objects/pack",
+		"objects/info", "logs", "logs/refs", "logs/refs/remotes", "logs/refs/remotes/origin"}
+	for _, b := range append([]string{"main"}, branches...) {
+		if ValidateBranch(b) != nil {
+			continue
+		}
+		for _, prefix := range []string{"refs/remotes/origin/", "logs/refs/remotes/origin/"} {
+			acc := prefix
+			for _, seg := range strings.Split(b, "/") {
+				acc += seg
+				names = append(names, acc)
+				acc += "/"
+			}
+		}
+	}
+	return names
+}
+
 // CheckLayout is the pure-Go (no git) refusal of a .git layout that could
 // redirect host git outside the workspace or pull in included config files.
-func CheckLayout(appDir string) (os.FileInfo, error) {
+// branches are the remote-tracking refs the caller will touch (see layoutPaths).
+func CheckLayout(appDir string, branches ...string) (os.FileInfo, error) {
 	if !filepath.IsAbs(appDir) {
 		return nil, ErrNotRepo
 	}
@@ -174,10 +198,7 @@ func CheckLayout(appDir string) (os.FileInfo, error) {
 	if err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("%w: .git is not a directory", ErrUnsafeRepo)
 	}
-	for _, name := range []string{"config", "HEAD", "packed-refs", "shallow", "refs", "refs/heads",
-		"refs/remotes", "refs/remotes/origin", "refs/remotes/origin/main", "objects", "objects/pack",
-		"objects/info", "logs", "logs/refs", "logs/refs/remotes", "logs/refs/remotes/origin",
-		"logs/refs/remotes/origin/main"} {
+	for _, name := range layoutPaths(branches) {
 		if l, err := os.Lstat(filepath.Join(gitDir, name)); err == nil && l.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("%w: .git/%s is a symlink", ErrUnsafeRepo, name)
 		}
@@ -214,8 +235,8 @@ func scanConfigIncludes(path string) error {
 }
 
 // openRepo is CheckLayout, then pins git to <appDir>/.git and verifies git agrees.
-func openRepo(ctx context.Context, appDir string) (repoCtx, error) {
-	fi, err := CheckLayout(appDir)
+func openRepo(ctx context.Context, appDir string, branches ...string) (repoCtx, error) {
+	fi, err := CheckLayout(appDir, branches...)
 	if err != nil {
 		return repoCtx{}, err
 	}
@@ -375,7 +396,7 @@ type RepoState struct {
 // PushSpec is one push request. Token is the DECRYPTED PAT (never logged).
 type PushSpec struct {
 	RepoURL    string // validated https, tokenless
-	Target     string // NEW branch name (validated ref)
+	Target     string // branch name to push to (validated ref); git/push passes a NEW branch, git/sync the sync branch
 	Rev        string // commit SHA to push (ValidCommitSHA); "" = HEAD
 	Username   string // credential username; defaults x-access-token
 	Token      string // decrypted PAT
@@ -398,7 +419,7 @@ func (Runner) Push(ctx context.Context, spec PushSpec) PushOutcome {
 		(spec.Rev != "" && !ValidCommitSHA(spec.Rev)) || spec.Token == "" || spec.ExpectHost == "" {
 		return PushOutcome{Reason: "push_failed"}
 	}
-	rc, reason := openAudited(ctx, spec.AppDir)
+	rc, reason := openAudited(ctx, spec.AppDir, spec.Target)
 	if reason != "" {
 		if reason == "failed" {
 			reason = "push_failed"
@@ -435,8 +456,8 @@ func ValidCommitSHA(s string) bool { return reCommitSHA.MatchString(s) }
 // openAudited is openRepo + the allow-list audit + the git version gate right
 // before a network op; reason is "" (ok), "unsafe_repo_config",
 // "host_git_too_old" or "failed".
-func openAudited(ctx context.Context, appDir string) (repoCtx, string) {
-	rc, err := openRepo(ctx, appDir)
+func openAudited(ctx context.Context, appDir string, branches ...string) (repoCtx, string) {
+	rc, err := openRepo(ctx, appDir, branches...)
 	if errors.Is(err, ErrUnsafeRepo) {
 		return rc, "unsafe_repo_config"
 	}

@@ -113,10 +113,7 @@ func (s *Server) v1GitPush(w http.ResponseWriter, r *http.Request) {
 		unavail(reason)
 		return
 	}
-	importBranch := "main"
-	if app.GitBranch.Valid && app.GitBranch.String != "" {
-		importBranch = app.GitBranch.String
-	}
+	importBranch := syncBranchFor(app)
 
 	// 2. Workspace + a running sandbox (woken if stopped): repo queries run in
 	// it, and the host-side push runs with it paused.
@@ -142,7 +139,7 @@ func (s *Server) v1GitPush(w http.ResponseWriter, r *http.Request) {
 	runner, ex := s.pusher(), s.gitExec()
 
 	// 3. Repo state + UNSAFE-CONFIG audit (before any network/credential use).
-	state, reason := gitRepoPreflight(r.Context(), ex, sb.ID, appDir, "push_failed")
+	state, reason := gitRepoPreflight(r.Context(), ex, sb.ID, appDir, importBranch, "push_failed")
 	if reason != "" {
 		unavail(reason)
 		return
@@ -239,9 +236,9 @@ func gitRemoteOf(app *store.App) (repoURL, reason string) {
 // repo state + the allow-list audit IN THE SANDBOX; reason "" = ok, failReason
 // on an internal error. The sandbox answers are untrusted: they can only make
 // us refuse — Fetch/Push re-audit host-side before any network op.
-func gitRepoPreflight(ctx context.Context, ex sandboxExecer, sbID, appDir, failReason string) (gitimport.RepoState, string) {
+func gitRepoPreflight(ctx context.Context, ex sandboxExecer, sbID, appDir, branch, failReason string) (gitimport.RepoState, string) {
 	var state gitimport.RepoState
-	if _, err := gitimport.CheckLayout(appDir); errors.Is(err, gitimport.ErrNotRepo) {
+	if _, err := gitimport.CheckLayout(appDir, branch); errors.Is(err, gitimport.ErrNotRepo) {
 		return state, "not_a_git_repo"
 	} else if err != nil {
 		return state, "unsafe_repo_config"

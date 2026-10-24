@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -156,6 +157,11 @@ type syncEnv struct {
 // git, fake in-sandbox git and a fake runtimed (short root: unix socket paths
 // are length-limited).
 func syncServer(t *testing.T, push *fakePusher, git *syncFake) *syncEnv {
+	return syncServerOnBranch(t, push, git, "main")
+}
+
+// syncServerOnBranch is syncServer for an app imported from `branch` (its sync target).
+func syncServerOnBranch(t *testing.T, push *fakePusher, git *syncFake, branch string) *syncEnv {
 	t.Helper()
 	s := appsGitServer(t)
 	s.Store = fileStore(t) // the background task watcher needs a shared (non-:memory:) DB
@@ -176,7 +182,7 @@ func syncServer(t *testing.T, push *fakePusher, git *syncFake) *syncEnv {
 
 	cid := seedCred(t, s, "tenantA", "gh")
 	app := &store.App{ID: newULID(), OwnerToken: "tenantA", Name: "My App",
-		GitRepoURL: nullStr("https://github.com/o/r"), GitBranch: nullStr("main"), GitCredentialID: nullStr(cid)}
+		GitRepoURL: nullStr("https://github.com/o/r"), GitBranch: nullStr(branch), GitCredentialID: nullStr(cid)}
 	if err := s.Store.CreateApp(context.Background(), app); err != nil {
 		t.Fatal(err)
 	}
@@ -570,5 +576,76 @@ func TestGitInProgressIgnoresNonDirGitDir(t *testing.T) {
 	os.WriteFile(filepath.Join(app2, ".git"), []byte("gitdir: "+target+"\n"), 0o644)
 	if op := gitInProgress(app2); op != "" {
 		t.Errorf("gitdir file: %q", op)
+	}
+}
+
+func TestSyncBranchFor(t *testing.T) {
+	t.Setenv("SANDBOXD_SYNC_BRANCH", "")
+	if got := syncBranchFor(&store.App{}); got != "main" {
+		t.Errorf("no branch, no env = %q", got)
+	}
+	if got := syncBranchFor(&store.App{GitBranch: nullStr("develop")}); got != "develop" {
+		t.Errorf("app branch = %q", got)
+	}
+	t.Setenv("SANDBOXD_SYNC_BRANCH", " staging ")
+	if got := syncBranchFor(&store.App{}); got != "staging" {
+		t.Errorf("env fallback = %q", got)
+	}
+	if got := syncBranchFor(&store.App{GitBranch: nullStr("develop")}); got != "develop" {
+		t.Errorf("app branch must win over env, got %q", got)
+	}
+	t.Setenv("SANDBOXD_SYNC_BRANCH", "bad..ref")
+	if got := syncBranchFor(&store.App{}); got != "main" {
+		t.Errorf("invalid env must be ignored, got %q", got)
+	}
+}
+
+func TestSyncUsesAppImportBranch(t *testing.T) {
+	push := &fakePusher{state: okState(), count: 1, outcome: gitimport.PushOutcome{OK: true},
+		fetchOutcome: gitimport.FetchOutcome{OK: true}}
+	e := syncServerOnBranch(t, push, &syncFake{statusOut: cleanStatus, behind: "1"}, "develop")
+	code, resp := e.sync(t, "tenantA", `{"mode":"publish"}`)
+	if code != http.StatusOK || resp.State != "published" || resp.Branch != "develop" {
+		t.Fatalf("got %d %+v", code, resp)
+	}
+	if push.gotFetch.Branch != "develop" || push.gotSpec.Target != "develop" {
+		t.Errorf("fetch branch = %q push target = %q", push.gotFetch.Branch, push.gotSpec.Target)
+	}
+	for _, sub := range []string{" merge ", "rev-list --count", "update-ref"} {
+		argv := strings.Join(e.git.cmdContaining(sub), " ")
+		if !strings.Contains(argv, "refs/remotes/origin/develop") || strings.Contains(argv, "origin/main") {
+			t.Errorf("%q argv must track origin/develop: %s", sub, argv)
+		}
+	}
+}
+
+func TestSyncConflictPromptNamesSyncBranch(t *testing.T) {
+	if p := resolvePrompt("merge", "develop"); !strings.Contains(p, "of origin/develop into") || strings.Contains(p, "origin/main") {
+		t.Errorf("prompt = %q", p)
+	}
+}
+
+func TestGitStatusAndDiffFollowSyncBranch(t *testing.T) {
+	e := syncServerOnBranch(t, &fakePusher{state: okState()}, &syncFake{statusOut: cleanStatus}, "develop")
+	r := reqAs("GET", "/v1/apps/"+e.appID+"/git/status", "", "tenantA")
+	r.SetPathValue("id", e.appID)
+	w := httptest.NewRecorder()
+	e.s.v1GitStatus(w, r)
+	var st v1GitStatusResp
+	json.Unmarshal(w.Body.Bytes(), &st)
+	if w.Code != http.StatusOK || !st.Available || st.SyncBranch != "develop" {
+		t.Fatalf("status = %d %+v", w.Code, st)
+	}
+	for rng, want := range map[string]int{"origin/develop..HEAD": http.StatusOK, "origin/main..HEAD": http.StatusOK, "origin/other..HEAD": http.StatusBadRequest} {
+		r := reqAs("GET", "/v1/apps/"+e.appID+"/git/diff?range="+url.QueryEscape(rng), "", "tenantA")
+		r.SetPathValue("id", e.appID)
+		w := httptest.NewRecorder()
+		e.s.v1GitDiff(w, r)
+		if w.Code != want {
+			t.Errorf("range %q: code %d want %d (%s)", rng, w.Code, want, w.Body.String())
+		}
+	}
+	if !e.git.issued("refs/remotes/origin/develop...HEAD") || e.git.issued("refs/remotes/origin/main...HEAD") {
+		t.Error("range diff must be computed against origin/develop")
 	}
 }

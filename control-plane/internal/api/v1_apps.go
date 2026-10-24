@@ -153,7 +153,7 @@ func (s *Server) v1CreateApp(w http.ResponseWriter, r *http.Request) {
 		}
 		branch := req.Git.Branch
 		if branch == "" {
-			branch = "main"
+			branch = syncBranchFor(nil) // SANDBOXD_SYNC_BRANCH, else main
 		}
 		if err := gitimport.ValidateBranch(branch); err != nil {
 			writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid git.branch")

@@ -427,3 +427,35 @@ func TestHostGitSupportedCachesOnlySuccess(t *testing.T) {
 		t.Error("successful parse should be cached")
 	}
 }
+
+func TestCheckLayoutCoversSyncBranchRefs(t *testing.T) {
+	ctx := context.Background()
+	elsewhere, _ := initRepo(t)
+	target := filepath.Join(elsewhere, ".git", "refs")
+	cases := map[string]struct{ branch, rel string }{
+		"develop ref":             {"develop", "refs/remotes/origin/develop"},
+		"develop reflog":          {"develop", "logs/refs/remotes/origin/develop"},
+		"release/x parent dir":    {"release/x", "refs/remotes/origin/release"},
+		"release/x reflog":        {"release/x", "logs/refs/remotes/origin/release/x"},
+		"release/x reflog parent": {"release/x", "logs/refs/remotes/origin/release"},
+	}
+	for name, c := range cases {
+		repo, _ := initRepo(t)
+		p := filepath.Join(repo, ".git", c.rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.RemoveAll(p)
+		if err := os.Symlink(target, p); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := CheckLayout(repo, c.branch); !errors.Is(err, ErrUnsafeRepo) {
+			t.Errorf("%s: CheckLayout(%s) err = %v", name, c.branch, err)
+		}
+		if _, err := CheckLayout(repo, "other"); err != nil {
+			t.Errorf("%s: an unrelated branch must not be refused: %v", name, err)
+		}
+		if out := (Runner{}).Fetch(ctx, FetchSpec{RepoURL: "https://github.com/o/r", Branch: c.branch,
+			Token: "t", AppDir: repo, ExpectHost: "github.com"}); out.Reason != "unsafe_repo_config" {
+			t.Errorf("%s: fetch = %+v", name, out)
+		}
+	}
+}

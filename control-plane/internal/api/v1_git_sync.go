@@ -1,7 +1,7 @@
-// v1_git_sync.go — Publish / Rebase on main: auto-commit user files, fetch the
-// remote main HOST-side (token stays in the control plane), then merge or rebase
+// v1_git_sync.go — Publish / Rebase on the sync branch: auto-commit user files, fetch the
+// remote sync branch HOST-side (token stays in the control plane), then merge or rebase
 // IN THE SANDBOX (repo-controlled merge drivers/filters/hooks must never run on
-// the control plane). Publish pushes HEAD to main fast-forward only. A conflict
+// the control plane). Publish pushes HEAD to the sync branch fast-forward only. A conflict
 // is left in progress and handed to an agent task; that result is never pushed
 // automatically — the user's next Publish does it.
 package api
@@ -23,17 +23,32 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
 
-// syncBranch is the fixed remote branch git/sync integrates with and publishes to.
-const syncBranch = "main"
+// defaultSyncBranch applies when neither the app's import branch nor
+// SANDBOXD_SYNC_BRANCH names one.
+const defaultSyncBranch = "main"
 
-const syncRemoteRef = "refs/remotes/origin/" + syncBranch
+// syncBranchFor is the remote branch git/sync integrates with and publishes to:
+// the app's import branch, else SANDBOXD_SYNC_BRANCH, else main. Both sources
+// pass ValidateBranch (the import branch at app creation), so the value is safe in argv.
+func syncBranchFor(app *store.App) string {
+	if app != nil && app.GitBranch.Valid && app.GitBranch.String != "" {
+		return app.GitBranch.String
+	}
+	if b := strings.TrimSpace(os.Getenv("SANDBOXD_SYNC_BRANCH")); b != "" && gitimport.ValidateBranch(b) == nil {
+		return b
+	}
+	return defaultSyncBranch
+}
+
+func syncRemoteRef(branch string) string { return "refs/remotes/origin/" + branch }
 
 type v1GitSyncReq struct {
 	Mode string `json:"mode"` // publish|rebase
 }
 
 type v1GitSyncResp struct {
-	State         string   `json:"state"` // published|rebased|up_to_date|resolving|failed
+	State         string   `json:"state"`            // published|rebased|up_to_date|resolving|failed
+	Branch        string   `json:"branch,omitempty"` // remote branch the sync targets
 	Reason        string   `json:"reason,omitempty"`
 	Commits       int      `json:"commits,omitempty"`
 	AutoCommitted string   `json:"auto_committed,omitempty"`
@@ -60,7 +75,8 @@ func (s *Server) v1GitSync(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", `mode must be "publish" or "rebase"`)
 		return
 	}
-	reply := func(resp v1GitSyncResp) { writeJSON(w, http.StatusOK, resp) }
+	branch := syncBranchFor(app)
+	reply := func(resp v1GitSyncResp) { resp.Branch = branch; writeJSON(w, http.StatusOK, resp) }
 
 	repoURL, reason := gitRemoteOf(app)
 	if reason != "" {
@@ -90,7 +106,7 @@ func (s *Server) v1GitSync(w http.ResponseWriter, r *http.Request) {
 	}()
 	appDir := filepath.Join(sb.WorkspaceMnt, "workspace", "app")
 
-	state, reason := gitRepoPreflight(r.Context(), s.gitExec(), sb.ID, appDir, "sync_failed")
+	state, reason := gitRepoPreflight(r.Context(), s.gitExec(), sb.ID, appDir, branch, "sync_failed")
 	if reason != "" {
 		reply(syncFailed(reason))
 		return
@@ -112,7 +128,7 @@ func (s *Server) v1GitSync(w http.ResponseWriter, r *http.Request) {
 		reply(syncFailed(reason))
 		return
 	}
-	resp, resolveOp := s.gitSyncLocked(r, sb, req.Mode, repoURL, appDir, state, string(token))
+	resp, resolveOp := s.gitSyncLocked(r, sb, req.Mode, repoURL, appDir, branch, state, string(token))
 	for i := range token { // best-effort scrub
 		token[i] = 0
 	}
@@ -120,7 +136,7 @@ func (s *Server) v1GitSync(w http.ResponseWriter, r *http.Request) {
 		// Release the lock before the agent runs so it never blocks commit/push.
 		s.Locks.Unlock(lockKey)
 		locked = false
-		resp.TaskID = s.submitResolveTask(r, sb.ID, resolveOp)
+		resp.TaskID = s.submitResolveTask(r, sb.ID, resolveOp, branch)
 		if resp.TaskID != "" {
 			if err := s.Store.SetAppGitResolveTaskID(r.Context(), app.ID, resp.TaskID); err != nil {
 				s.loggerFor(r, sb.ID).Warn("git sync: record resolve task failed", "err", err.Error())
@@ -136,16 +152,16 @@ func (s *Server) v1GitSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ev := events.Event{AppID: app.ID, SandboxID: sb.ID, Severity: events.SeverityInfo,
-		Payload: map[string]any{"repo_url": repoURL, "mode": req.Mode, "reason": resp.Reason}}
+		Payload: map[string]any{"repo_url": repoURL, "mode": req.Mode, "branch": branch, "reason": resp.Reason}}
 	switch resp.State {
 	case "published", "rebased", "up_to_date":
 		if err := s.Store.SetAppGitResolveTaskID(r.Context(), app.ID, ""); err != nil {
 			s.loggerFor(r, sb.ID).Warn("git sync: clear resolve task failed", "err", err.Error())
 		}
 		if resp.State == "published" {
-			ev.Type, ev.Message = events.GitSyncPublished, "Published to "+syncBranch
+			ev.Type, ev.Message = events.GitSyncPublished, "Published to "+branch
 		} else if resp.State == "rebased" {
-			ev.Type, ev.Message = events.GitSyncRebased, "Rebased onto "+syncBranch
+			ev.Type, ev.Message = events.GitSyncRebased, "Rebased onto "+branch
 		}
 	case "resolving":
 		ev.Type, ev.Message, ev.TaskID = events.GitSyncConflict, "Agent resolving "+resp.Operation+" conflicts", resp.TaskID
@@ -163,9 +179,10 @@ func (s *Server) v1GitSync(w http.ResponseWriter, r *http.Request) {
 // gitSyncLocked runs auto-commit → fetch → integrate → (publish) push. Caller
 // holds the git lock and scrubs token. A non-empty resolveOp means a conflicted
 // merge|rebase is left in progress for the caller to hand to an agent.
-func (s *Server) gitSyncLocked(r *http.Request, sb *store.Sandbox, mode, repoURL, appDir string,
+func (s *Server) gitSyncLocked(r *http.Request, sb *store.Sandbox, mode, repoURL, appDir, branch string,
 	state gitimport.RepoState, token string) (resp v1GitSyncResp, resolveOp string) {
 	ctx, ex, runner := r.Context(), s.gitExec(), s.pusher()
+	remoteRef := syncRemoteRef(branch)
 
 	// 1. Auto-commit user files (runtime files excluded by gitCommit's default).
 	auto := ""
@@ -180,12 +197,12 @@ func (s *Server) gitSyncLocked(r *http.Request, sb *store.Sandbox, mode, repoURL
 	}
 	withAuto := func(resp v1GitSyncResp) v1GitSyncResp { resp.AutoCommitted = auto; return resp }
 
-	// 2. Host-side fetch of the remote main (also moves the Unpushed baseline),
+	// 2. Host-side fetch of the remote sync branch (also moves the Unpushed baseline),
 	// with the sandbox frozen so Fetch's own audit still holds at the network op.
 	var f gitimport.FetchOutcome
 	if err := s.withPaused(r, sb.ID, func() {
 		f = runner.Fetch(ctx, gitimport.FetchSpec{
-			RepoURL: repoURL, Branch: syncBranch, Token: token, AppDir: appDir,
+			RepoURL: repoURL, Branch: branch, Token: token, AppDir: appDir,
 			ExpectHost: gitimport.HostOf(repoURL), Unshallow: state.IsShallow,
 		})
 	}); err != nil {
@@ -197,7 +214,7 @@ func (s *Server) gitSyncLocked(r *http.Request, sb *store.Sandbox, mode, repoURL
 		}
 		return withAuto(syncFailed(f.Reason)), ""
 	}
-	b, err := ex.Exec(ctx, "s-"+sb.ID, gitArgs("rev-list", "--count", "HEAD.."+syncRemoteRef))
+	b, err := ex.Exec(ctx, "s-"+sb.ID, gitArgs("rev-list", "--count", "HEAD.."+remoteRef))
 	if err != nil || b.ExitCode != 0 {
 		return withAuto(syncFailed("sync_failed")), ""
 	}
@@ -205,9 +222,9 @@ func (s *Server) gitSyncLocked(r *http.Request, sb *store.Sandbox, mode, repoURL
 
 	// 3. Integrate IN THE SANDBOX.
 	if behind > 0 {
-		args := syncGitArgs("merge", "--no-edit", "--no-verify", syncRemoteRef)
+		args := syncGitArgs("merge", "--no-edit", "--no-verify", remoteRef)
 		if mode == "rebase" {
-			args = syncGitArgs("rebase", "--no-verify", "--autostash", syncRemoteRef)
+			args = syncGitArgs("rebase", "--no-verify", "--autostash", remoteRef)
 		}
 		res, err := ex.Exec(ctx, "s-"+sb.ID, args)
 		if err != nil {
@@ -230,7 +247,7 @@ func (s *Server) gitSyncLocked(r *http.Request, sb *store.Sandbox, mode, repoURL
 	}
 
 	// 4. Outcome.
-	commits, err := gitUnpushed(ctx, ex, sb.ID, syncBranch)
+	commits, err := gitUnpushed(ctx, ex, sb.ID, branch)
 	if err != nil {
 		return withAuto(syncFailed("sync_failed")), ""
 	}
@@ -252,7 +269,7 @@ func (s *Server) gitSyncLocked(r *http.Request, sb *store.Sandbox, mode, repoURL
 	var out gitimport.PushOutcome
 	if err := s.withPaused(r, sb.ID, func() {
 		out = runner.Push(ctx, gitimport.PushSpec{
-			RepoURL: repoURL, Target: syncBranch, Rev: head, Token: token, AppDir: appDir,
+			RepoURL: repoURL, Target: branch, Rev: head, Token: token, AppDir: appDir,
 			ExpectHost: gitimport.HostOf(repoURL),
 		})
 	}); err != nil {
@@ -261,8 +278,8 @@ func (s *Server) gitSyncLocked(r *http.Request, sb *store.Sandbox, mode, repoURL
 	if !out.OK {
 		return withAuto(syncFailed(out.Reason)), ""
 	}
-	if u, err := ex.Exec(ctx, "s-"+sb.ID, syncGitArgs("update-ref", syncRemoteRef, head)); err != nil || u.ExitCode != 0 {
-		s.loggerFor(r, sb.ID).Warn("git sync: update origin/main after publish failed")
+	if u, err := ex.Exec(ctx, "s-"+sb.ID, syncGitArgs("update-ref", remoteRef, head)); err != nil || u.ExitCode != 0 {
+		s.loggerFor(r, sb.ID).Warn("git sync: update tracking ref after publish failed", "branch", branch)
 	}
 	return withAuto(v1GitSyncResp{State: "published", Commits: commits}), ""
 }
@@ -339,8 +356,8 @@ func (s *Server) wakeForGit(w http.ResponseWriter, r *http.Request, sb *store.Sa
 
 // submitResolveTask starts the conflict-resolution agent task via the public
 // task-submit handler (default agent); "" = no agent could be started.
-func (s *Server) submitResolveTask(r *http.Request, sandboxID, op string) string {
-	body, _ := json.Marshal(map[string]string{"prompt": resolvePrompt(op)})
+func (s *Server) submitResolveTask(r *http.Request, sandboxID, op, branch string) string {
+	body, _ := json.Marshal(map[string]string{"prompt": resolvePrompt(op, branch)})
 	code, out := s.delegate(r, s.v1SubmitTask, http.MethodPost, "/v1/sandboxes/"+sandboxID+"/tasks",
 		map[string]string{"id": sandboxID}, body)
 	if code != http.StatusAccepted {
@@ -356,13 +373,13 @@ func (s *Server) submitResolveTask(r *http.Request, sandboxID, op string) string
 }
 
 // resolvePrompt never embeds file names: they are repo-controlled (prompt injection).
-func resolvePrompt(op string) string {
+func resolvePrompt(op, branch string) string {
 	// The sandbox has no global git identity; pass the ephemeral one per command.
 	next := "git -c user.name=sandbox-agent -c user.email=agent@sandboxd.local commit --no-edit"
 	if op == "rebase" {
 		next = "GIT_EDITOR=true git -c user.name=sandbox-agent -c user.email=agent@sandboxd.local rebase --continue"
 	}
-	p := "A git " + op + " of origin/main into the local work stopped on conflicts. " +
+	p := "A git " + op + " of origin/" + branch + " into the local work stopped on conflicts. " +
 		"List the conflicted files with `git diff --name-only --diff-filter=U`. " +
 		"Resolve every conflict marker, preserving the intent of both sides. " +
 		"Run the project's build/tests if available. `git add` the resolved files, then `" + next + "`."

@@ -66,6 +66,8 @@ type v1GitStatusResp struct {
 	InProgress    string   `json:"in_progress"`
 	Conflicts     []string `json:"conflicts"`
 	ResolveTaskID string   `json:"resolve_task_id,omitempty"`
+	// SyncBranch is the remote branch Publish/Rebase target (see syncBranchFor).
+	SyncBranch string `json:"sync_branch,omitempty"`
 }
 
 type v1GitDiffResp struct {
@@ -92,34 +94,34 @@ func gitArgs(args ...string) []string {
 //   - reason!=""    -> not ready (no_sandbox|sandbox_not_running); the caller
 //     renders its own shape (available:false for read; committed:false for commit).
 //   - else          -> sb is the running sandbox.
-func (s *Server) gitSandbox(w http.ResponseWriter, r *http.Request) (sb *store.Sandbox, reason string, handled bool) {
+func (s *Server) gitSandbox(w http.ResponseWriter, r *http.Request) (app *store.App, sb *store.Sandbox, reason string, handled bool) {
 	app, err := s.Store.GetAppForOwner(r.Context(), r.PathValue("id"), tenantToken(r))
 	if errors.Is(err, store.ErrNotFound) {
 		writeV1Err(w, http.StatusNotFound, "not_found", "no such app")
-		return nil, "", true
+		return nil, nil, "", true
 	}
 	if err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "lookup failed")
-		return nil, "", true
+		return nil, nil, "", true
 	}
 	cur, err := s.Store.CurrentSandboxForApp(r.Context(), app.ID)
 	if err != nil {
-		return nil, "no_sandbox", false
+		return app, nil, "no_sandbox", false
 	}
 	if cur.Status != "running" {
-		return nil, "sandbox_not_running", false
+		return app, nil, "sandbox_not_running", false
 	}
-	return cur, "", false
+	return app, cur, "", false
 }
 
 // GET /v1/apps/{id}/git/status
 func (s *Server) v1GitStatus(w http.ResponseWriter, r *http.Request) {
-	sb, reason, handled := s.gitSandbox(w, r)
+	app, sb, reason, handled := s.gitSandbox(w, r)
 	if handled {
 		return
 	}
 	if reason != "" {
-		writeJSON(w, http.StatusOK, map[string]any{"available": false, "reason": reason})
+		writeJSON(w, http.StatusOK, map[string]any{"available": false, "reason": reason, "sync_branch": syncBranchFor(app)})
 		return
 	}
 	st := gitStatus(r.Context(), s.gitExec(), sb.ID)
@@ -129,16 +131,18 @@ func (s *Server) v1GitStatus(w http.ResponseWriter, r *http.Request) {
 			st.Conflicts = gitConflicts(r.Context(), s.gitExec(), sb.ID)
 		}
 		st.ResolveTaskID, _ = s.Store.GetAppGitResolveTaskID(r.Context(), sb.AppID.String)
+		st.SyncBranch = syncBranchFor(app)
 	}
 	writeJSON(w, http.StatusOK, st)
 }
 
-// syncDiffRange is the only accepted git/diff `range` (what Publish would push).
-const syncDiffRange = "origin/main..HEAD"
+// legacySyncDiffRange is the pre-sync-branch git/diff `range` value; still accepted
+// and always means "what Publish would push" (origin/<sync branch>..HEAD).
+const legacySyncDiffRange = "origin/main..HEAD"
 
-// GET /v1/apps/{id}/git/diff?path=<optional relative path>&range=origin/main..HEAD
+// GET /v1/apps/{id}/git/diff?path=<optional relative path>&range=origin/<sync branch>..HEAD
 func (s *Server) v1GitDiff(w http.ResponseWriter, r *http.Request) {
-	sb, reason, handled := s.gitSandbox(w, r)
+	app, sb, reason, handled := s.gitSandbox(w, r)
 	if handled {
 		return
 	}
@@ -147,12 +151,13 @@ func (s *Server) v1GitDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rev := []string{"HEAD"}
+	syncRange := "origin/" + syncBranchFor(app) + "..HEAD"
 	switch r.URL.Query().Get("range") {
 	case "":
-	case syncDiffRange:
-		rev = []string{"refs/remotes/origin/main...HEAD"} // merge-base: only what Publish adds
+	case syncRange, legacySyncDiffRange:
+		rev = []string{syncRemoteRef(syncBranchFor(app)) + "...HEAD"} // merge-base: only what Publish adds
 	default:
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid range (only "+syncDiffRange+")")
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid range (only "+syncRange+", or the legacy alias "+legacySyncDiffRange+")")
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -192,7 +197,7 @@ type v1GitCommitResp struct {
 
 // POST /v1/apps/{id}/git/commit
 func (s *Server) v1GitCommit(w http.ResponseWriter, r *http.Request) {
-	sb, reason, handled := s.gitSandbox(w, r)
+	_, sb, reason, handled := s.gitSandbox(w, r)
 	if handled {
 		return
 	}

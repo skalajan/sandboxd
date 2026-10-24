@@ -965,6 +965,7 @@ paths:
                   in_progress: { type: string, enum: [merge, rebase, ""], description: "Derived from .git/MERGE_HEAD, .git/rebase-merge and .git/rebase-apply. Empty when no operation is running." }
                   conflicts: { type: array, items: { type: string }, description: "Unmerged paths (git diff --name-only --diff-filter=U)." }
                   resolve_task_id: { type: string, nullable: true, description: "Most recent sync-resolution agent task for this app, if any." }
+                  sync_branch: { type: string, description: "Remote branch Publish/Rebase target: the app's import branch (SANDBOXD_SYNC_BRANCH or main when the app was created without one). Also present when available=false." }
         "404": { $ref: "#/components/responses/Error" }
 
   /v1/apps/{id}/git/diff:
@@ -981,11 +982,12 @@ paths:
           description: Optional workspace-relative path filter. Absolute paths and `..` are rejected.
         - in: query
           name: range
-          schema: { type: string, enum: ["origin/main..HEAD"] }
+          schema: { type: string, example: "origin/develop..HEAD" }
           description: >
             Combined diff of what Publish would push, instead of the working tree vs HEAD.
-            Computed from the merge base (git diff origin/main...HEAD), so commits only on main are not shown.
-            Only the exact value origin/main..HEAD is accepted; any other revision is rejected.
+            Computed from the merge base (git diff origin/<sync branch>...HEAD), so commits only on the
+            sync branch are not shown. Only origin/<sync_branch>..HEAD (as reported by git/status) or the
+            legacy literal origin/main..HEAD is accepted; any other revision is rejected.
             Ignores path. Same truncation cap.
       responses:
         "200":
@@ -1091,12 +1093,12 @@ paths:
     post:
       operationId: syncAppGit
       tags: [apps]
-      summary: Sync the app's workspace with the remote main. Publish (merge + push to main) or rebase locally. Conflicts hand off to an agent task.
+      summary: Sync the app's workspace with its remote sync branch (the import branch; apps created without one import SANDBOXD_SYNC_BRANCH, else main). Publish (merge + push) or rebase locally. Conflicts hand off to an agent task.
       description: >
         Steps under the per-workspace git lock: pre-flight (same guards as push), auto-commit
-        of user files if dirty, host-side fetch of origin/main, then an in-sandbox merge
-        (publish) or rebase (rebase). A clean publish pushes HEAD:refs/heads/main fast-forward
-        only (never force). A conflict leaves the merge/rebase in progress and submits an
+        of user files if dirty, host-side fetch of origin/<sync branch>, then an in-sandbox merge
+        (publish) or rebase (rebase). A clean publish pushes HEAD:refs/heads/<sync branch> fast-forward
+        only (never force). The response carries the branch as `branch`. A conflict leaves the merge/rebase in progress and submits an
         agent resolution task; the result stays local and unpushed until a second publish.
         Wakes the sandbox if stopped. If a merge or rebase is already in progress, returns
         state=resolving with the existing resolve_task_id (idempotent).
@@ -1108,7 +1110,7 @@ paths:
               type: object
               required: [mode]
               properties:
-                mode: { type: string, enum: [publish, rebase], description: "publish = merge origin/main and push to main; rebase = rebase local work onto origin/main (local only)." }
+                mode: { type: string, enum: [publish, rebase], description: "publish = merge origin/<sync branch> and push back to it; rebase = rebase local work onto origin/<sync branch> (local only)." }
       responses:
         "200":
           description: Sync outcome. Domain outcomes (including failed) return 200.
@@ -1118,6 +1120,7 @@ paths:
                 type: object
                 properties:
                   state: { type: string, enum: [published, rebased, up_to_date, resolving, failed] }
+                  branch: { type: string, description: "Remote branch the sync targeted (sync_branch of git/status)." }
                   reason: { type: string, description: "Set when state=failed. no_repo_url | no_credential | credential_not_found | no_workspace | not_a_git_repo | empty_repo_unsupported | unsafe_repo_config | host_git_too_old | merge_in_progress | fetch_failed | no_main_branch | auth_failed | non_fast_forward | agent_unavailable | sync_failed" }
                   commits: { type: integer, description: "Set for published and rebased." }
                   auto_committed: { type: string, description: "Short sha of the auto-commit, if one was made." }

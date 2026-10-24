@@ -41,11 +41,32 @@ describe('GitTab sync buttons', () => {
     [{ state: 'rebased', commits: 1 }, 'toast', 'Rebased onto main (1 local commit)'],
     [{ state: 'up_to_date' }, 'toast', 'Already up to date'],
     [{ state: 'failed', reason: 'non_fast_forward' }, 'error', 'main moved — click Publish again'],
+    [{ state: 'failed', reason: 'no_main_branch' }, 'error', 'Remote branch main not found'],
     [{ state: 'failed', reason: 'no_credential' }, 'error', 'No Git credential — add one in Settings → Git credentials.'],
   ])('maps %j to the right message', async (resp, kind, text) => {
     const { toast, onError } = setup({}, (m, p) => (m === 'POST' && /git\/sync$/.test(p) ? resp : undefined))
     fireEvent.click(await screen.findByTestId('git-publish'))
     await waitFor(() => expect((kind === 'toast' ? toast : onError)).toHaveBeenCalledWith(text))
+  })
+})
+
+describe('GitTab sync branch', () => {
+  it('labels buttons, toasts and the range diff with the app sync branch', async () => {
+    const paths: string[] = []
+    const { toast } = setup({ sync_branch: 'develop' }, (m, p) => {
+      paths.push(p)
+      return m === 'POST' && /git\/sync$/.test(p) ? { state: 'published', commits: 2, branch: 'develop' } : undefined
+    })
+    const rebase = (await screen.findByTestId('git-rebase')) as HTMLButtonElement
+    expect(rebase.textContent).toBe('Rebase on develop')
+    expect((screen.getByTestId('git-publish') as HTMLButtonElement).title).toContain('publishes to develop')
+    fireEvent.click(screen.getByTestId('git-publish'))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Published 2 commits → develop'))
+  })
+
+  it('defaults to main when status has no sync branch', async () => {
+    setup({})
+    expect((await screen.findByTestId('git-rebase')).textContent).toBe('Rebase on main')
   })
 })
 

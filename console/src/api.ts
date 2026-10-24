@@ -178,6 +178,7 @@ export interface GitStatus {
   in_progress?: 'merge' | 'rebase' | '' // an agent-resolved sync is mid-flight
   conflicts?: string[] // unmerged paths while in_progress
   resolve_task_id?: string // most recent sync-resolution task, survives reload
+  sync_branch?: string // remote branch Publish/Rebase target (the app's import branch)
 }
 export interface GitDiff {
   available: boolean
@@ -194,6 +195,7 @@ export interface GitCommitResult {
 }
 export interface GitSyncResult {
   state: 'published' | 'rebased' | 'up_to_date' | 'resolving' | 'failed'
+  branch?: string // remote branch the sync targeted
   reason?: string // state=failed
   commits?: number
   auto_committed?: string
@@ -480,8 +482,8 @@ export const api = {
   gitStatus: (appId: string) => req<GitStatus>('GET', `/v1/apps/${appId}/git/status`),
   gitDiff: (appId: string, path?: string) =>
     req<GitDiff>('GET', `/v1/apps/${appId}/git/diff${path ? `?path=${encodeURIComponent(path)}` : ''}`),
-  gitRangeDiff: (appId: string) =>
-    req<GitDiff>('GET', `/v1/apps/${appId}/git/diff?range=${encodeURIComponent('origin/main..HEAD')}`),
+  gitRangeDiff: (appId: string, branch = 'main') =>
+    req<GitDiff>('GET', `/v1/apps/${appId}/git/diff?range=${encodeURIComponent(`origin/${branch}..HEAD`)}`),
   gitSync: (appId: string, mode: 'publish' | 'rebase') =>
     req<GitSyncResult>('POST', `/v1/apps/${appId}/git/sync`, { mode }),
   gitSyncAbort: (appId: string) =>

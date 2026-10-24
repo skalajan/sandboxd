@@ -33,9 +33,9 @@ For claude-code subscriptions there is also a real server-side OAuth flow (see
 6. **Commit**: commit selected changes locally (in-sandbox).
 7. **Push**: push the local commits to a **new branch** on the remote (host-side),
    then open a PR yourself on your Git host.
-8. **Publish or rebase on main** (optional): merge the latest remote `main` into
-   the work and push to `main`, or rebase the work onto `main` locally. See
-   [Publish & Rebase on main](#publish--rebase-on-main).
+8. **Publish or rebase** (optional): merge the latest remote sync branch into
+   the work and push it back, or rebase the work onto it locally. See
+   [Publish & Rebase](#publish--rebase).
 
 ## Endpoints
 
@@ -46,7 +46,7 @@ For claude-code subscriptions there is also a real server-side OAuth flow (see
 | Import (private) | `POST /v1/apps` with `git: {repo_url, branch, credential_id}` | clone host-side, via PAT |
 | Runtime detect | `GET /v1/apps/{id}/runtime-inspect` | control plane (read-only) |
 | Status | `GET /v1/apps/{id}/git/status` | **in-sandbox** |
-| Diff | `GET /v1/apps/{id}/git/diff?path=` or `?range=origin/main..HEAD` | **in-sandbox** |
+| Diff | `GET /v1/apps/{id}/git/diff?path=` or `?range=origin/<sync branch>..HEAD` | **in-sandbox** |
 | Commit | `POST /v1/apps/{id}/git/commit` | **in-sandbox** |
 | Push | `POST /v1/apps/{id}/git/push` | control plane (host-side) |
 | Sync (publish / rebase) | `POST /v1/apps/{id}/git/sync` | fetch + push host-side; merge/rebase **in-sandbox** |
@@ -141,15 +141,21 @@ on the remote. Key properties:
   in the sandbox, and the host-side push runs with it paused), and refuses with
   `no_local_commits` when there's nothing to push (computed locally, no network).
 
-## Publish & Rebase on main
+## Publish & Rebase
 
 Two sync actions share one endpoint, `POST /v1/apps/{id}/git/sync` with
 `{"mode":"publish"}` or `{"mode":"rebase"}`. The console Git panel exposes them as
-**Publish** and **Rebase on main**. Any other `mode` returns `400`.
+**Publish** and **Rebase on <branch>**. Any other `mode` returns `400`.
 
-- **Publish** merges the latest remote `main` into your work and pushes the result
-  to `main`. Fast-forward only, never `--force`.
-- **Rebase on main** rebases your work onto the latest remote `main`. It stays
+Both act on the app's **sync branch**: the branch the app was imported from
+(`git.branch` on `POST /v1/apps`). An app created without `git.branch` is imported
+from `SANDBOXD_SYNC_BRANCH` (control-plane environment), or `main` when that is
+empty, and that becomes its sync branch. `GET /v1/apps/{id}/git/status` reports it
+as `sync_branch`, and every sync response carries it as `branch`.
+
+- **Publish** merges the latest remote sync branch into your work and pushes the
+  result back to it. Fast-forward only, never `--force`.
+- **Rebase** rebases your work onto the latest remote sync branch. It stays
   local; nothing is pushed.
 
 Both modes start the same way:
@@ -161,16 +167,17 @@ Both modes start the same way:
 2. **Auto-commit** — if user files changed, all of them are committed first
    (runtime files excluded), as `sandboxd: auto-commit before publish` or
    `… before rebase`. The short sha comes back as `auto_committed`.
-3. **Fetch** — host-side, `main` is fetched into `refs/remotes/origin/main` from the
-   app's repo URL (never `.git/config` origin). On the first sync of a shallow clone
-   this also unshallows the repo. A missing remote `main` returns `no_main_branch`.
-4. **Integrate** — in the sandbox: `git merge --no-edit origin/main` (publish) or
-   `git rebase origin/main` (rebase).
+3. **Fetch** — host-side, the sync branch is fetched into
+   `refs/remotes/origin/<branch>` from the app's repo URL (never `.git/config`
+   origin). On the first sync of a shallow clone this also unshallows the repo. A
+   missing remote branch returns `no_main_branch`.
+4. **Integrate** — in the sandbox: `git merge --no-edit origin/<branch>` (publish) or
+   `git rebase origin/<branch>` (rebase).
 5. **Outcome**:
-   - `up_to_date` — nothing new on `main`, and (publish) nothing to push.
+   - `up_to_date` — nothing new on the sync branch, and (publish) nothing to push.
    - `rebased` — rebase finished cleanly; `commits` is the local commit count.
-   - `published` — merge finished cleanly and the fast-forward push to `main` was
-     accepted. If `main` moved in the meantime, the push fails with
+   - `published` — merge finished cleanly and the fast-forward push was accepted.
+     If the branch moved in the meantime, the push fails with
      `non_fast_forward`: click **Publish** again.
    - `resolving` — the merge or rebase hit conflicts. See below.
 
@@ -198,10 +205,10 @@ operation is aborted and the call returns `failed` with `agent_unavailable`.
 ### Review gate
 
 An agent-resolved merge is **committed locally and never pushed automatically**. To
-review it, open the diff for `GET /v1/apps/{id}/git/diff?range=origin/main..HEAD`,
+review it, open the diff for `GET /v1/apps/{id}/git/diff?range=origin/<sync branch>..HEAD`,
 which shows exactly what Publish would push. Clicking **Publish** again re-fetches,
-merges nothing if `main` hasn't moved, and pushes. A rebase result is always
-local-only; a later Publish is the only path to `main`.
+merges nothing if the sync branch hasn't moved, and pushes. A rebase result is always
+local-only; a later Publish is the only path to the sync branch.
 
 While a merge or rebase is in progress, `git/commit`, `git/push`, and `git/sync`
 refuse with `merge_in_progress` (sync returns `resolving` as above).
@@ -263,8 +270,9 @@ can't race an in-flight commit/push/sync.
     its answers can only make sandboxd refuse.
   - **Layout check** (pure Go, before any git): `workspace/app` and `.git` must be
     real directories (no symlink, no `gitdir:` file); `config`, `HEAD`, `packed-refs`,
-    `shallow`, `refs/…`, `refs/remotes/origin/main`, `objects/…` and `logs/…origin/main`
-    must not be symlinks; `objects/info/alternates`, `commondir`, `config.worktree`, and any
+    `shallow`, `refs/…`, `objects/…`, `logs/…` and every path component of
+    `refs/remotes/origin/<branch>` and `logs/refs/remotes/origin/<branch>` for the
+    branch about to be fetched or pushed (and `main`) must not be symlinks; `objects/info/alternates`, `commondir`, `config.worktree`, and any
     `[include]`/`[includeIf]` section or `worktreeConfig` in `.git/config` are refused. Git is pinned with
     `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CEILING_DIRECTORIES` and
     `rev-parse --absolute-git-dir` must match.
@@ -293,11 +301,14 @@ can't race an in-flight commit/push/sync.
     input; a git config key or repo file we haven't anticipated could still change
     behaviour. The long-term fix is a host-owned bare repo (or bundle exchange), so
     host git never opens the agent's `.git`.
-- **Writes to `main`** — only `git/sync` with `mode:"publish"` writes `main`, and only
-  fast-forward. The remote enforces this; sandboxd never sends `--force`.
+- **Writes to the sync branch** — only `git/sync` with `mode:"publish"` writes the
+  app's sync branch (its import branch), and only fast-forward. The remote enforces
+  this; sandboxd never sends `--force`.
 - **Accepted risks** — auto-commit publishes whatever user files exist in the
-  workspace, and there is no secret scanning. Publish pushes to `main` with no
-  review step beyond the Publish click. The target branch is fixed to `main`.
+  workspace, and there is no secret scanning. Publish pushes to the sync branch with
+  no review step beyond the Publish click; if the app was imported from a protected
+  or release branch, Publish writes that branch (use branch protection on the host,
+  or a PAT without write access, to require review).
 - **Events/audit** carry repo URL (tokenless) + branch + result only.
 
 ## Limitations (current)
@@ -307,9 +318,10 @@ can't race an in-flight commit/push/sync.
   unshallows it. The Push button still returns `shallow_push_unsupported` if a remote
   rejects a push for shallowness.
 - **Push is new branch only** — `git/push` never targets `main`/`master` or the
-  import branch. Only `git/sync` with `mode:"publish"` writes `main`, and only
+  import branch. Only `git/sync` with `mode:"publish"` writes the sync branch, and only
   fast-forward. **No PR creation** (open the PR yourself on your Git host).
-- **Sync target is fixed to `main`** — there is no configurable target branch.
+- **Sync target is the import branch** — there is no separate per-app target branch;
+  to publish elsewhere, import the app from that branch.
 - **Empty repos** (no `HEAD`) can't be committed, pushed, or synced in this slice.
 - **status/diff/commit need a running sandbox**; push and sync wake a stopped
   sandbox first.

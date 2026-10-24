@@ -34,6 +34,7 @@ export function useGitSync({
 
   const inProgress = st?.in_progress || ''
   const resolveTaskId = st?.resolve_task_id
+  const branch = st?.sync_branch || 'main'
   // While an agent resolves conflicts, poll status and the task so the banner survives reloads and flips on failure.
   useEffect(() => {
     if (!inProgress) {
@@ -60,13 +61,15 @@ export function useGitSync({
     setSyncing(mode)
     try {
       const r = await api.gitSync(appId, mode)
-      if (r.state === 'published') toast(`Published ${r.commits ?? 0} commit${r.commits === 1 ? '' : 's'} → main`)
+      const target = r.branch || branch
+      if (r.state === 'published') toast(`Published ${r.commits ?? 0} commit${r.commits === 1 ? '' : 's'} → ${target}`)
       else if (r.state === 'rebased')
-        toast(`Rebased onto main (${r.commits ?? 0} local commit${r.commits === 1 ? '' : 's'})`)
+        toast(`Rebased onto ${target} (${r.commits ?? 0} local commit${r.commits === 1 ? '' : 's'})`)
       else if (r.state === 'up_to_date') toast('Already up to date')
       else if (r.state === 'resolving')
         toast(`Agent resolving ${r.conflicts?.length ?? 0} conflict${r.conflicts?.length === 1 ? '' : 's'}…`)
-      else if (r.reason === 'non_fast_forward') onError('main moved — click Publish again')
+      else if (r.reason === 'non_fast_forward') onError(`${target} moved — click Publish again`)
+      else if (r.reason === 'no_main_branch') onError(`Remote branch ${target} not found`)
       else if (r.reason === 'no_credential') onError('No Git credential — add one in Settings → Git credentials.')
       else onError(r.reason || 'sync failed')
       setResolveFailed(false)
@@ -99,8 +102,8 @@ export function useGitSync({
     setDiffLoading(true)
     setDiff('')
     try {
-      const d = await api.gitRangeDiff(appId)
-      setDiff(d.diff || (d.available ? '(no changes ahead of main)' : d.reason || 'unavailable'))
+      const d = await api.gitRangeDiff(appId, branch)
+      setDiff(d.diff || (d.available ? `(no changes ahead of ${branch})` : d.reason || 'unavailable'))
     } catch (e) {
       onError((e as Error).message)
       setRangeMode(false)
@@ -121,6 +124,7 @@ export function useGitSync({
     syncing,
     resolveFailed,
     rangeMode,
+    branch,
     reviewDismissed,
     sync,
     abortSync,
@@ -207,7 +211,7 @@ export function GitSyncBanner({ sync, onViewTask }: { sync: GitSync; onViewTask?
 }
 
 export function GitSyncButtons({ sync, filesCount }: { sync: GitSync; filesCount: number }) {
-  const { syncing, inProgress } = sync
+  const { syncing, inProgress, branch } = sync
   const disabled = !!syncing || !!inProgress
   const busyTitle = inProgress ? 'A sync is already in progress' : null
   return (
@@ -218,17 +222,17 @@ export function GitSyncButtons({ sync, filesCount }: { sync: GitSync; filesCount
         onClick={() => sync.sync('rebase')}
         title={
           busyTitle ??
-          (filesCount ? 'Commits all changed files first, then rebases onto main' : 'Rebase onto the latest main')
+          (filesCount ? `Commits all changed files first, then rebases onto ${branch}` : `Rebase onto the latest ${branch}`)
         }
       >
-        {syncing === 'rebase' ? 'Rebasing…' : 'Rebase on main'}
+        {syncing === 'rebase' ? 'Rebasing…' : `Rebase on ${branch}`}
       </Btn>
       <Btn
         data-testid="git-publish"
         variant="primary"
         disabled={disabled}
         onClick={() => sync.sync('publish')}
-        title={busyTitle ?? (filesCount ? 'Commits all changed files first, then publishes to main' : 'Publish to main')}
+        title={busyTitle ?? (filesCount ? `Commits all changed files first, then publishes to ${branch}` : `Publish to ${branch}`)}
         style={{ fontSize: 13 }}
       >
         {syncing === 'publish' ? 'Publishing…' : 'Publish'}
